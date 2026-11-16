@@ -2,6 +2,11 @@
 
 This is the maintained spinachx64 fork of pi-qqbot, imported from upstream 2.8.0 and validated with Pi 1.5.2. Keep the upstream MIT notice and attribution.
 
+## Delivery workflow
+
+- Commit completed changes directly to `main` and push to the repository.
+- Do not create pull requests unless the user explicitly requests one.
+
 ## Development
 
 - Node.js 22+; install with `npm ci --ignore-scripts --omit=peer`.
