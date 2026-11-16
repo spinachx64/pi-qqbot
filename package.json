@@ -1,0 +1,73 @@
+{
+  "name": "@spinachx64/pi-qqbot",
+  "version": "2.8.0-spinach.1",
+  "type": "module",
+  "description": "QQ private/group bridge for Pi with isolated conversations and a single-process task scheduler",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "qq",
+    "qqbot",
+    "bot",
+    "coding-agent",
+    "approval"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/spinachx64/pi-qqbot.git"
+  },
+  "homepage": "https://github.com/spinachx64/pi-qqbot#readme",
+  "bugs": {
+    "url": "https://github.com/spinachx64/pi-qqbot/issues"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "npm run test:group && npm run test:isolation && npm run test:update-policy",
+    "test:group": "node test/group.test.mjs",
+    "test:isolation": "node test/isolation.test.mjs",
+    "test:update-policy": "node test/update-policy.test.mjs"
+  },
+  "files": [
+    "*.ts",
+    "qq",
+    "util",
+    "README.md",
+    "CHANGELOG.en.md",
+    "CHANGELOG.zh-CN.md",
+    "docs",
+    "LICENSE",
+    "CHANGELOG.md",
+    "NOTICE.md",
+    "config.example.json"
+  ],
+  "dependencies": {
+    "proper-lockfile": "^4.1.2",
+    "ws": "^8.18.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^1.5.2",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "typebox": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/proper-lockfile": "^4.1.4",
+    "@types/ws": "^8.18.2",
+    "jiti": "^2.6.1",
+    "typebox": "^1.3.27"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

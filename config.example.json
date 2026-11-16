@@ -1,0 +1,35 @@
+{
+  "sandbox": true,
+  "allowlist": [],
+  "markdownReply": true,
+  "streaming": false,
+  "approve": {
+    "tools": [
+      "bash",
+      "powershell",
+      "write",
+      "edit"
+    ],
+    "remember": true
+  },
+  "queue": {
+    "max": 5,
+    "ack": true
+  },
+  "progress": {
+    "enabled": false,
+    "intervalMs": 30000
+  },
+  "commands": {
+    "passthrough": true,
+    "allowReload": false,
+    "allowQuit": false,
+    "allowUpdate": false,
+    "allowSession": true
+  },
+  "files": {
+    "enabled": true,
+    "maxBytes": 31457280,
+    "forceApproval": true
+  }
+}
