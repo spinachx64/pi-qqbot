@@ -2,6 +2,7 @@ import WebSocket from "ws";
 import { GATEWAY_PATH } from "../constants";
 import { log } from "../logger";
 import { groupTarget } from "./target";
+import { parseQuote, type ParsedQuote } from "./quote";
 
 const OP_DISPATCH = 0;
 const OP_HEARTBEAT = 1;
@@ -19,10 +20,12 @@ export interface QQAttachment {
   size?: number;
 }
 
-export interface QQMessage {
+export interface QQMessage extends ParsedQuote {
   /** Conversation target: a user openid, or group:<group_openid>. */
   openid: string;
   senderOpenid?: string;
+  senderName?: string;
+  memberRole?: string;
   /** Internal receipt metadata retained while waiting for the shared executor. */
   receivedAt?: number;
   isolationLogged?: boolean;
@@ -31,7 +34,6 @@ export interface QQMessage {
   msgId: string;
   timestamp: number;
   attachments: QQAttachment[];
-  quotedText?: string;
 }
 
 /** 按钮点击回调（INTERACTION_CREATE）*/
@@ -233,14 +235,19 @@ export class QQGateway {
       const group = t === "GROUP_AT_MESSAGE_CREATE";
       const groupOpenid = group ? String(d.group_openid ?? "") : undefined;
       const senderOpenid = String(group
-        ? d.author?.member_openid ?? d.author?.id ?? ""
+        ? d.author?.member_openid ?? ""
         : d.author?.user_openid ?? d.author?.id ?? d.openid ?? "");
       if (!senderOpenid || (group && !groupOpenid)) {
         log("[gateway] 忽略缺少目标/发送者的消息:", t);
         return;
       }
       const target = group ? groupTarget(groupOpenid!) : senderOpenid;
-      const content = group ? String(d.content ?? "").trimStart() : String(d.content ?? "");
+      const content = String(d.content ?? "");
+      const senderName = group
+        ? (typeof d.author?.username === "string" && d.author.username.trim()) || `成员_${senderOpenid.slice(-8)}`
+        : undefined;
+      const memberRole = group && typeof d.author?.member_role === "string"
+        ? d.author.member_role : undefined;
       const rawAttachments = Array.isArray(d.attachments) ? d.attachments : [];
       const attachments = rawAttachments
         .filter((a: any) => !!a && typeof a === "object")
@@ -276,12 +283,14 @@ export class QQGateway {
       this.opts.message({
         openid: target,
         senderOpenid,
+        senderName,
+        memberRole,
         groupOpenid,
         content,
         msgId: String(d.id ?? d.msg_id ?? ""),
         timestamp: Date.parse(String(d.timestamp ?? "")) || Date.now(),
         attachments,
-        quotedText: undefined,
+        ...(group ? parseQuote(d) : {}),
       });
     }
   }
