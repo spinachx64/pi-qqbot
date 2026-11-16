@@ -36,6 +36,7 @@ import { claimAny, startClaimRetry, reserveBeforeRelease, readOwner, type Claim 
 import { AuthManager } from "./qq/auth";
 import { QQApi } from "./qq/api";
 import { createGatewayUrlFetcher, QQGateway, QQMessage, type QQInteractionEvent } from "./qq/gateway";
+import { isQQImageUrl, isQuoteImageType } from "./qq/quote";
 import { Approver } from "./approver";
 import { parsePickIndex, pickerExpired, REPLACES_RUNTIME, routeSlash, runBridge, type PickerState } from "./slash";
 import { agoLabel, MessageQueue, previewText, type QueuedJob } from "./queue";
@@ -1642,7 +1643,8 @@ export async function handleMessage(
 
     // Both the direct and MessageQueue paths use the same boundary. IsolationHub
     // also reaches this point after dispatching its unchanged rawMessage.
-    const agentInput = buildAgentInput(msg, incoming);
+    const quotedImageLines = await saveQuotedImages(state, cfg, msg);
+    const agentInput = buildAgentInput(msg, incoming, quotedImageLines);
 
     // 忙检查：单会话串行处理——忙碌时入队，当前任务结束后自动继续
     if (isBusy(state)) {
@@ -1667,8 +1669,66 @@ export async function handleMessage(
   }
 }
 
+/** Runs after raw commands/approvals; download URLs are not rendered into prompts. */
+async function saveQuotedImages(state: State, cfg: QQBotConfig, msg: QQMessage): Promise<string[]> {
+  if (!isGroupTarget(msg.openid) || msg.quoteStatus !== "resolved" || !msg.quotedAttachments?.length) return [];
+  const acc = attachmentConfig(cfg);
+  if (!acc.enabled) return ["引用图片不可用：配置 attachments.enabled=false，本次只处理文字。"];
+  const images = msg.quotedAttachments.filter(a => isQuoteImageType(a.contentType) && isQQImageUrl(a.url));
+  const lines = images.length < msg.quotedAttachments.length
+    ? ["引用图片不可用：部分图片类型或下载地址不受支持。"] : [];
+  // Current attachments retain priority; the per-message budget is shared.
+  const limit = Math.max(1, acc.maxPerMessage);
+  const remaining = Math.max(0, limit - (msg.attachments?.length ?? 0));
+  if (!remaining) return [...lines, "引用图片不可用：已达到单条消息附件数量上限。"];
+  const fetchFn = state.attachmentFetch ?? fetch;
+  const guardedFetch: typeof fetch = async (input, options) => {
+    if (typeof input !== "string" || !isQQImageUrl(input)) throw new Error("不支持的引用图片地址");
+    let response: Response;
+    try {
+      // Signed CDN URLs need no bot credentials. Do not follow redirects or retry
+      // with Authorization; a new destination must never bypass URL validation.
+      response = await fetchFn(input, { ...options, headers: {}, redirect: "manual" });
+    } catch {
+      throw new Error("引用图片下载失败（网络错误或超时）");
+    }
+    if ((response.status >= 300 && response.status < 400) || response.redirected) {
+      await response.body?.cancel().catch(() => {});
+      throw new Error("引用图片下载不允许重定向");
+    }
+    if (response.ok && !isQuoteImageType(response.headers.get("content-type") ?? "")) {
+      await response.body?.cancel().catch(() => {});
+      throw new Error("下载结果不是支持的图片类型");
+    }
+    return response;
+  };
+  const { saved, failed } = await saveIncoming(images.map((image, i) => ({
+    ...image,
+    // Remote filenames are untrusted and can contain URLs or section markers.
+    filename: `quoted-${i + 1}${/\.(png|jpe?g|gif|webp|bmp|heic|heif|tiff?)$/i.exec(image.filename ?? "")?.[0] ?? ""}`,
+  })), {
+    dir: acc.dir || defaultAttachmentDir(cfg.appId),
+    maxBytes: acc.maxBytes,
+    maxPerMessage: remaining,
+    fetchFn: guardedFetch,
+    prefix: `${msg.msgId}-quoted`,
+  });
+  log("[quote-image] 落盘", saved.length, "个，失败", failed.length, "个");
+  return [...lines, ...saved.map(image => `引用图片路径 ${image.path}`),
+    ...failed.map(failure => {
+      // Body-stream/filesystem exceptions can also contain URLs. Only surface
+      // known downloader messages, never arbitrary error text or remote names.
+      const reason = /^(?:下载失败 HTTP (?:401\/403|\d{3})(?:（没有可用凭据重试）)?|单条消息最多处理 \d+ 个)$/.test(failure.reason)
+        ? failure.reason
+        : failure.reason.startsWith("文件过大（") ? "图片超过大小限制"
+        : ["下载到 0 字节", "引用图片下载失败（网络错误或超时）", "引用图片下载不允许重定向", "下载结果不是支持的图片类型"].includes(failure.reason)
+          ? failure.reason : "下载失败";
+      return `引用图片不可用：${reason}`;
+    })];
+}
+
 /** Only model-bound group messages are wrapped; command routing uses raw content. */
-export function buildAgentInput(msg: QQMessage, incoming = msg.content): string {
+export function buildAgentInput(msg: QQMessage, incoming = msg.content, quotedImageLines: string[] = []): string {
   if (!isGroupTarget(msg.openid)) return incoming;
   const sender = msg.senderOpenid ?? "未知";
   const name = msg.senderName || `成员_${sender.slice(-8)}`;
@@ -1689,7 +1749,10 @@ export function buildAgentInput(msg: QQMessage, incoming = msg.content): string 
     // masquerading as the current sender's request or identity metadata.
     lines.push(msg.quoteStatus !== "missing" && msg.quotedText !== undefined
       ? `原文：${JSON.stringify(msg.quotedText)}`
-      : "原文：[不可用：事件未提供可确认的引用正文，不推测内容]");
+      : msg.quoteStatus === "resolved" && msg.quotedAttachments?.length
+        ? "原文：（无文字）"
+        : "原文：[不可用：事件未提供可确认的引用正文，不推测内容]");
+    lines.push(...quotedImageLines);
   }
   lines.push("", "[当前消息]", incoming || "（无正文）");
   return lines.join("\n");

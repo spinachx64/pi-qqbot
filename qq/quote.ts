@@ -1,3 +1,5 @@
+import type { QQAttachment } from "./gateway";
+
 /** QQ pushes do not always include the referenced message's text or author. */
 export interface ParsedQuote {
   msgIdx?: string;
@@ -6,6 +8,7 @@ export interface ParsedQuote {
   quotedText?: string;
   quotedSenderName?: string;
   quotedSenderOpenid?: string;
+  quotedAttachments?: QQAttachment[];
 }
 
 export const MAX_QUOTED_TEXT_CHARS = 4000;
@@ -35,12 +38,66 @@ function boundedText(text: string): string {
   return /[\uD800-\uDBFF]$/.test(value) ? value.slice(0, -1) : value;
 }
 
+/** Exact download endpoints only; never return a normalized/re-encoded signature. */
+export function isQQImageUrl(value: string): boolean {
+  if (!value.startsWith("https://") || /[\s\\\u0000-\u001f\u007f]/.test(value)) return false;
+  try {
+    const url = new URL(value);
+    if (url.username || url.password || url.port || url.hash) return false;
+    return (url.hostname === "multimedia.nt.qq.com.cn" && url.pathname === "/download") ||
+      (url.hostname === "gchat.qpic.cn" && url.pathname.startsWith("/gchatpic_new/")) ||
+      (url.hostname === "c2cpicdw.qpic.cn" && url.pathname.startsWith("/offpic_new/"));
+  } catch { return false; }
+}
+
+export function isQuoteImageType(value: string): boolean {
+  return /^(?:image|image\/(?:png|jpeg|jpg|gif|webp|bmp|heic|heif|tiff))(?:\s*;.*)?$/i.test(value);
+}
+
+function quoteContent(candidate: ObjectValue): { text?: string; images: QQAttachment[] } {
+  const images: QQAttachment[] = [];
+  const add = (raw: unknown) => {
+    const item = object(raw);
+    const url = nonempty(item.url);
+    const contentType = nonempty(item.content_type) ?? nonempty(item.contentType) ?? "";
+    if (!url || !isQuoteImageType(contentType) || !isQQImageUrl(url)) return;
+    if (images.some(image => image.url === url)) return;
+    images.push({ url, contentType, filename: nonempty(item.filename),
+      size: typeof item.size === "number" && Number.isFinite(item.size) && item.size >= 0 ? item.size : undefined });
+  };
+  if (Array.isArray(candidate.attachments)) candidate.attachments.forEach(add);
+  const hasStructuredImages = images.length > 0;
+  const originalText = nonempty(candidate.content);
+  const lines = (originalText ?? "").split(/\r?\n/);
+  const text: string[] = [];
+  let removedDescriptor = false;
+  for (let i = 0; i < lines.length; i++) {
+    // Only complete, line-delimited descriptors inside a matched quote element.
+    // Never scan arbitrary prose/URLs, recurse into quotes, or expose signed URLs.
+    if (/^\[附件\d+\] 类型[:：]\s*图片\s*$/.test(lines[i])) {
+      let next = i + 1;
+      const filename = /^文件名[:：](.*)$/.exec(lines[next] ?? "");
+      if (filename) next++;
+      const url = /^URL[:：](https?:\/\/\S+)\s*$/.exec(lines[next] ?? "");
+      if (url) {
+        if (!hasStructuredImages) add({ url: url[1], content_type: "image", filename: filename?.[1].trim() });
+        removedDescriptor = true;
+        i = next;
+        continue;
+      }
+    }
+    text.push(lines[i]);
+  }
+  return { text: removedDescriptor ? nonempty(text.join("\n")) : originalText, images };
+}
+
 function resolved(result: ParsedQuote, candidates: ObjectValue[]): ParsedQuote {
   if (!candidates.length) return { ...result, quoteStatus: "missing" };
   const first = candidates[0];
-  const content = nonempty(first.content);
-  // Conflicting candidates or absent text must not be replaced with a guess.
-  if (!content || candidates.some(candidate => candidate.content !== content)) {
+  const content = quoteContent(first);
+  // Matching text alone is insufficient: different pictures are conflicting too.
+  if ((!content.text && !content.images.length) || candidates.some(candidate =>
+    JSON.stringify(quoteContent(candidate)) !== JSON.stringify(content))) {
     return { ...result, quoteStatus: "missing" };
   }
   const authors = candidates.map(candidate => object(candidate.author));
@@ -50,7 +107,8 @@ function resolved(result: ParsedQuote, candidates: ObjectValue[]): ParsedQuote {
   return {
     ...result,
     quoteStatus: "resolved",
-    quotedText: boundedText(content),
+    quotedText: content.text ? boundedText(content.text) : undefined,
+    ...(content.images.length ? { quotedAttachments: content.images } : {}),
     // Never substitute the current message's author for the quoted author.
     quotedSenderOpenid: sameAuthor ? nonempty(author.member_openid) : undefined,
     quotedSenderName: sameAuthor ? nonempty(author.username) : undefined,

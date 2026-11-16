@@ -13,7 +13,7 @@ try{
  const {IsolationHub}=await jiti.import('../isolation.ts');
  const {QQApi}=await jiti.import('../qq/api.ts');
  const {parseQuote}=await jiti.import('../qq/quote.ts');
- const sends=[],runs=[],histories=new Map(),runtimes=[],modelSelections=[];
+ const sends=[],runs=[],histories=new Map(),runtimes=[],modelSelections=[],imageRequests=[];
  const cfg={allowlist:[],queue:{max:5,ack:true},approve:{tools:[],remember:true},progress:{enabled:false,intervalMs:30000},commands:{passthrough:false},markdownReply:false,appId:'test-bot'};
  const api=new QQApi({restBase:'https://qq.test',getToken:async()=> 'fake',fetchFn:async(url,o)=>{sends.push({url,body:JSON.parse(o.body)});return Response.json({});}});
  const hub=new IsolationHub(createInitialState,home);
@@ -22,6 +22,7 @@ try{
   let valid=true;
   let runtimeModel={provider:file.includes("old-mixed")?"working-provider":"builtin-provider",id:"model"};
   const state=hub.stateFor(hub.nextTarget??hub.activeTarget);
+  state.attachmentFetch=async url=>{imageRequests.push(url);return new Response(Buffer.from('isolated-image'),{headers:{'content-type':'image/png'}});};
   const events=new Map(),commands=new Map();
   const assertFresh=()=>{if(!valid)throw new Error('OLD RUNTIME USED');};
   const pi={setModel:async model=>{assertFresh();runtimeModel=model;modelSelections.push(model);return true;},on:(n,f)=>events.set(n,f),registerCommand:(n,c)=>commands.set(n,c),registerTool(){},getCommands:()=>[],getAllTools:()=>[],
@@ -42,6 +43,8 @@ try{
  hub.captureTransport(initial.state);
  const msg=(target,id,content,metadata={})=>({openid:target,senderOpenid:'member-'+target,msgId:id,content,attachments:[],...metadata});
  const quote=(text)=>parseQuote({message_scene:{ext:['ref_msg_idx=shared-reference==']},msg_elements:[{msg_idx:'shared-reference==',content:text}]});
+ const imageQuote=(text,group)=>parseQuote({message_scene:{ext:['ref_msg_idx=shared-reference==']},msg_elements:[{msg_idx:'shared-reference==',content:text,
+  attachments:[{url:`https://multimedia.nt.qq.com.cn/download?rkey=signature-${group}`,content_type:'image/png',filename:'image.png'}]}]});
  await hub.receive(msg('group:A','a1','secret-A',{senderName:'同昵称',senderOpenid:'member-A-one',...quote('仅属于群 A 的引用')}));
  await waitFor(()=>runs.length===1);
  assert.equal(runs[0].target,'group:A');assert.deepEqual(runs[0].history,[]);
@@ -49,12 +52,14 @@ try{
  const aState=hub.stateFor('group:A');aState.approver.setAutoAllow(true);
  await hub.receive(msg('group:B','b1','secret-B',{senderName:'同昵称',senderOpenid:'member-B-one',...quote('将被取消的群 B 引用')}));
  await hub.receive(msg('private-C','c1','secret-C'));
- await hub.receive(msg('group:A','a2','remember A',{senderName:'同昵称',senderOpenid:'member-A-two',...quote('群 A 的第二条引用')}));
+ await hub.receive(msg('group:A','a2','remember A',{senderName:'同昵称',senderOpenid:'member-A-two',...imageQuote('群 A 的第二条引用','A')}));
  assert.equal(aState.queue.size,1);assert.equal(hub.stateFor('group:B').queue.size,1);
  const rawA=aState.queue.list()[0].rawMessage;
  assert.equal(rawA.content,'remember A','IsolationHub retains raw control/routing text');
  assert.equal(rawA.senderName,'同昵称');assert.equal(rawA.senderOpenid,'member-A-two');
  assert.equal(rawA.refMsgIdx,'shared-reference==');assert.equal(rawA.quotedText,'群 A 的第二条引用');
+ assert.equal(rawA.quotedAttachments[0].url,'https://multimedia.nt.qq.com.cn/download?rkey=signature-A');
+ assert.equal(imageRequests.length,0,'queued rawMessage does not download before its conversation is dispatched');
  assert.equal(aState.queue.list()[0].text,'remember A','augmentation is deferred until handleMessage');
  // /queue and /cancel on B must not touch running A or queued C.
  await hub.receive(msg('group:B','bq','  /queue',{senderName:'同昵称',...quote('/cancel')}));
@@ -63,12 +68,15 @@ try{
  await hub.receive(msg('group:B','bc','/cancel',{senderName:'同昵称',...quote('不应被转给模型的引用')}));
  assert.equal(hub.stateFor('group:B').queue.size,0);assert.equal(aState.busy,true);assert.equal(hub.stateFor('private-C').queue.size,1);
  assert.equal(aState.cancelled,false);
- await hub.receive(msg('group:B','b2','secret-B-new',{senderName:'同昵称',senderOpenid:'member-B-two',...quote('只属于群 B 的新引用')}));
+ await hub.receive(msg('group:B','b2','secret-B-new',{senderName:'同昵称',senderOpenid:'member-B-two',...imageQuote('只属于群 B 的新引用','B')}));
  const settle=async answer=>{current.state.replyBuffer.append(answer);await current.events.get('agent_settled')();};
  await settle('answer-A');await waitFor(()=>runs.length===2);
  assert.equal(runs[1].target,'group:B');assert.deepEqual(runs[1].history,[]);
  assert(runs[1].text.includes('成员ID："member-B-two"'));assert(runs[1].text.includes('只属于群 B 的新引用'));
  assert(!runs[1].text.includes('群 A 的引用'));assert(!runs[1].text.includes('将被取消的群 B 引用'));
+ assert.deepEqual(imageRequests,['https://multimedia.nt.qq.com.cn/download?rkey=signature-B']);
+ const bImage=/^引用图片路径 (.+)$/m.exec(runs[1].text)?.[1];assert(bImage);assert(fs.existsSync(bImage));
+ assert(!runs[1].text.includes('rkey='));
  assert.equal(current.state.approver.autoAllowed,false,'approval settings are not shared');
  await settle('answer-B');await waitFor(()=>runs.length===3);
  assert.equal(runs[2].target,'private-C');assert.deepEqual(runs[2].history,[]);assert.equal(runs[2].text,'secret-C');
@@ -77,6 +85,9 @@ try{
  assert(runs[3].history[0].includes('仅属于群 A 的引用'));assert(runs[3].history[0].includes('成员ID："member-A-one"'));
  assert(runs[3].text.includes('群 A 的第二条引用'));assert(runs[3].text.includes('成员ID："member-A-two"'));
  assert(!runs[3].text.includes('群 B'));assert(!runs[3].history[0].includes('群 B'));
+ const aImage=/^引用图片路径 (.+)$/m.exec(runs[3].text)?.[1];assert(aImage);assert(fs.existsSync(aImage));
+ assert.notEqual(aImage,bImage);assert(!runs[3].text.includes(bImage));assert(!runs[3].text.includes('rkey='));
+ assert.deepEqual(imageRequests,['https://multimedia.nt.qq.com.cn/download?rkey=signature-B','https://multimedia.nt.qq.com.cn/download?rkey=signature-A']);
  assert.equal(runs[3].text.split('[QQ群消息]').length-1,1,'rawMessage route does not double-wrap input');
  assert.equal(runs[3].file,runs[0].file,'same group resumes its existing history');
  assert.equal(current.state.approver.autoAllowed,true,'group-specific approval state preserved');
@@ -86,6 +97,7 @@ try{
  console.log('PASS real handlers: distinct group/private histories, round-robin serial execution, fresh runtime binding');
  console.log('PASS queue views, cancellation, approval memory and queued work remain conversation-local');
  console.log('PASS rawMessage deferral preserves names and quotes; same-named members and shared ref indices do not mix across groups');
+ console.log('PASS quoted images download after conversation dispatch and retain separate paths across groups');
 
  const store=path.join(home,'.pi/agent/qq-isolation');
  const index=JSON.parse(fs.readFileSync(path.join(store,fs.readdirSync(store)[0],'sessions.json'),'utf8'));

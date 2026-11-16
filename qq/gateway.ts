@@ -20,6 +20,7 @@ export interface QQAttachment {
   size?: number;
 }
 
+/** ParsedQuote also carries quotedAttachments, separate from current attachments. */
 export interface QQMessage extends ParsedQuote {
   /** Conversation target: a user openid, or group:<group_openid>. */
   openid: string;

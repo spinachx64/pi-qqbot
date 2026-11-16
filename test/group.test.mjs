@@ -290,6 +290,7 @@ try {
   assert(identityPrompts.at(-1).endsWith('[当前消息]\n（无正文）'));
   console.log('PASS agent boundary: direct/legacy queue parity, quote-only input, raw commands/approval/cancel and group trust rules');
 
+  await import('./quote-images.test.mjs');
   console.log('All group regression checks passed. No live QQ/model requests made.');
 } finally {
   if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome;
