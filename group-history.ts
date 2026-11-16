@@ -41,6 +41,13 @@ export interface HistoryQuery {
   offset?: number;
 }
 
+export class HistoryQueryError extends Error {
+  constructor(readonly field: "since" | "before") {
+    super(`${field} 须为有效 ISO 8601 时间；不筛选时请省略或留空。`);
+    this.name = "HistoryQueryError";
+  }
+}
+
 /** One bounded JSONL per bot/group. Async per-group serialization prevents races. */
 export class GroupHistoryStore {
   readonly dir: string;
@@ -124,13 +131,13 @@ export class GroupHistoryStore {
     return this.serial(file, async () => {
       const rows = (await this.load(file)).filter(row => row.groupOpenid === group);
       await this.replace(file, rows);
-      const date = (value: string | undefined, fallback: number) => {
-        if (value === undefined) return fallback;
+      const date = (value: string | undefined, fallback: number, field: "since" | "before") => {
+        if (value == null || (typeof value === "string" && !value.trim())) return fallback;
         const parsed = Date.parse(value);
-        if (!Number.isFinite(parsed)) throw new Error("时间须为有效 ISO 8601 字符串");
+        if (!Number.isFinite(parsed)) throw new HistoryQueryError(field);
         return parsed;
       };
-      const since = date(query.since, -Infinity), before = date(query.before, Infinity);
+      const since = date(query.since, -Infinity, "since"), before = date(query.before, Infinity, "before");
       const limit = Math.min(200, Math.max(1, Math.trunc(Number(query.limit) || 50)));
       const offset = Math.min(GROUP_HISTORY_MAX, Math.max(0, Math.trunc(Number(query.offset) || 0)));
       const keyword = (query.keyword ?? "").toLocaleLowerCase();

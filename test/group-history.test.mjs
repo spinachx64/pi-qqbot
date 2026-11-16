@@ -126,6 +126,10 @@ try {
   assert.equal(page.records[0].messageId, 'a2'); assert.equal(page.nextOffset, 1);
   assert.equal((await store.query('A', { limit: 1, offset: page.nextOffset })).records[0].messageId, 'a1');
   assert.equal((await store.query('A', { before: new Date(now - 1500).toISOString() })).matched, 1);
+  for (const blank of ['', '   ', null]) {
+    assert.equal((await store.query('A', { since: blank, before: blank })).total, 2);
+    assert.equal((await store.query('A', { since: blank, before: blank })).matched, 2);
+  }
   await assert.rejects(store.query('A', { since: 'not-a-time' }));
   await store.append(makeMessage('A', 'private-text', 'api_key=supersecretvalue https://multimedia.nt.qq.com.cn/download?rkey=secret-key', 0, {
     attachments: [{ url: 'https://media.test/private?rkey=ATTACHMENT_SECRET', filename: 'photo.png', contentType: 'image/png', size: 20 }],
@@ -196,6 +200,17 @@ try {
   assert(!result.isError); assert(result.content[0].text.includes('A群独有的背景'));
   assert(!result.content[0].text.includes('B群不能泄露的背景'));
   assert(!('groupOpenid' in tool.parameters.properties));
+  const realArguments = { before: '', keyword: '', limit: 15, offset: 0, sender: '', since: '' };
+  assert(!((await tool.execute('real-empty-filters', realArguments)).isError), 'exact production arguments succeed');
+  const invalidTime = await tool.execute('invalid-time', { before: 'PRIVATE_INVALID_TIME' });
+  assert.equal(invalidTime.isError, true); assert(invalidTime.content[0].text.includes('before'));
+  await fs.mkdir(path.join(home, '.pi/agent'), { recursive: true });
+  await tool.execute('logged-success', realArguments);
+  await tool.execute('logged-invalid', { since: 'PRIVATE_INVALID_TIME' });
+  const historyDiagnostics = (await fs.readFile(path.join(home, '.pi/agent/pi-qqbot.log'), 'utf8')).split('\n').filter(line => line.includes('[group-history]'));
+  assert(historyDiagnostics.some(line => line.includes('查询成功')));
+  assert(historyDiagnostics.some(line => line.includes('INVALID_TIME') && line.includes('since')));
+  assert(!historyDiagnostics.some(line => line.includes('PRIVATE_INVALID_TIME') || line.includes('A群独有的背景')));
   const options = { promptGuidelines: [] };
   events.get('before_agent_start')({ messageType: 'user', systemPromptOptions: options });
   assert(options.promptGuidelines.some(rule => rule.includes('qq_group_history') && rule.includes('不可信')));

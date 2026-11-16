@@ -84,7 +84,7 @@ import {
 } from "./billing";
 import { ReplyBuffer } from "./stream-buffer";
 import { sharedIsolationHub, type IsolationHub } from "./isolation";
-import { GroupHistoryStore, type HistoryQuery } from "./group-history";
+import { GroupHistoryStore, HistoryQueryError, type HistoryQuery } from "./group-history";
 import { splitText } from "./util/chunk";
 import {
   buildApprovalKeyboard,
@@ -814,8 +814,8 @@ export default function (
     parameters: Type.Object({
       keyword: Type.Optional(Type.String({ description: "正文关键词（字面子串，不区分大小写）" })),
       sender: Type.Optional(Type.String({ description: "发送者 member_openid，精确匹配" })),
-      since: Type.Optional(Type.String({ description: "起始时间，ISO 8601，包含此时刻" })),
-      before: Type.Optional(Type.String({ description: "截止时间，ISO 8601，不含此时刻" })),
+      since: Type.Optional(Type.String({ description: "起始时间，ISO 8601，包含此时刻；省略或留空不限制" })),
+      before: Type.Optional(Type.String({ description: "截止时间，ISO 8601，不含此时刻；省略或留空不限制" })),
       limit: Type.Optional(Type.Number({ minimum: 1, maximum: 200 })),
       offset: Type.Optional(Type.Number({ minimum: 0, maximum: 5000 })),
     }),
@@ -826,14 +826,24 @@ export default function (
         state.currentOpenid === target && isGroupTarget(target) && !!history && state.groupHistory === history &&
         (!state.isolation || state.isolation.activeTarget === target);
       if (!target || !history || !canRead()) {
+        log("[group-history] 查询拒绝", { target, reason: "NO_ACTIVE_GROUP" });
         return { content: [{ type: "text", text: "仅可在当前 QQ 群的任务中读取该群记录。" }], isError: true, details: {} };
       }
       try {
         const result = await history.query(target.slice(6), params ?? {});
-        if (!canRead()) return { content: [{ type: "text", text: "群聊任务已切换或取消，本次结果已丢弃。" }], isError: true, details: {} };
+        if (!canRead()) {
+          log("[group-history] 查询拒绝", { target, reason: "STALE_CONTEXT" });
+          return { content: [{ type: "text", text: "群聊任务已切换或取消，本次结果已丢弃。" }], isError: true, details: {} };
+        }
+        log("[group-history] 查询成功", { target, total: result.total, matched: result.matched, returned: result.records.length, offset: result.offset });
         return { content: [{ type: "text", text: JSON.stringify(result) }], details: { groupOpenid: target.slice(6) } };
-      } catch {
-        return { content: [{ type: "text", text: "群聊记录读取失败，请检查时间筛选格式或存储状态。" }], isError: true, details: {} };
+      } catch (error: any) {
+        const invalidTime = error instanceof HistoryQueryError;
+        log("[group-history] 查询失败", { target, reason: invalidTime ? "INVALID_TIME" : "STORAGE_ERROR",
+          field: invalidTime ? error.field : undefined,
+          code: typeof error?.code === "string" && /^[A-Z0-9_]{1,32}$/.test(error.code) ? error.code : undefined });
+        const text = invalidTime ? error.message : "群聊记录读取失败：存储暂不可用。";
+        return { content: [{ type: "text", text }], isError: true, details: {} };
       }
     },
   }));
