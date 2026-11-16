@@ -13,6 +13,7 @@ try{
  const {IsolationHub}=await jiti.import('../isolation.ts');
  const {QQApi}=await jiti.import('../qq/api.ts');
  const {parseQuote}=await jiti.import('../qq/quote.ts');
+ const {GroupHistoryStore}=await jiti.import('../group-history.ts');
  const sends=[],runs=[],histories=new Map(),runtimes=[],modelSelections=[],imageRequests=[];
  const cfg={allowlist:[],queue:{max:5,ack:true},approve:{tools:[],remember:true},progress:{enabled:false,intervalMs:30000},commands:{passthrough:false},markdownReply:false,appId:'test-bot'};
  const api=new QQApi({restBase:'https://qq.test',getToken:async()=> 'fake',fetchFn:async(url,o)=>{sends.push({url,body:JSON.parse(o.body)});return Response.json({});}});
@@ -39,6 +40,7 @@ try{
   const runtime={pi,ctx,state,events,file,invalidate:()=>{valid=false;}};runtimes.push(runtime);current=runtime;return runtime;
  }
  const initial=bind();
+ const groupHistory=new GroupHistoryStore('test-bot');initial.state.groupHistory=groupHistory;
  initial.state.cfg=cfg;initial.state.api=api;initial.state.account={name:'test',appId:'test-bot'};initial.state.registryCtx=initial.ctx;
  hub.captureTransport(initial.state);
  const msg=(target,id,content,metadata={})=>({openid:target,senderOpenid:'member-'+target,msgId:id,content,attachments:[],...metadata});
@@ -78,6 +80,7 @@ try{
  const bImage=/^引用图片路径 (.+)$/m.exec(runs[1].text)?.[1];assert(bImage);assert(fs.existsSync(bImage));
  assert(!runs[1].text.includes('rkey='));
  assert.equal(current.state.approver.autoAllowed,false,'approval settings are not shared');
+ assert.equal(current.state.groupHistory,groupHistory,'the bound history source survives a group session replacement');
  await settle('answer-B');await waitFor(()=>runs.length===3);
  assert.equal(runs[2].target,'private-C');assert.deepEqual(runs[2].history,[]);assert.equal(runs[2].text,'secret-C');
  await settle('answer-C');await waitFor(()=>runs.length===4);
@@ -92,6 +95,7 @@ try{
  assert.equal(runs[3].file,runs[0].file,'same group resumes its existing history');
  assert.equal(current.state.approver.autoAllowed,true,'group-specific approval state preserved');
  assert.equal(hub.stateFor('group:A'),aState);
+ assert.equal(current.state.groupHistory,groupHistory,'history source remains available when resuming group A');
  assert.equal(new Set(runs.slice(0,3).map(r=>r.file)).size,3);
  await settle('answer-A2');
  console.log('PASS real handlers: distinct group/private histories, round-robin serial execution, fresh runtime binding');
@@ -137,5 +141,6 @@ try{
  assert.equal(executed,false);
  console.log('PASS cancelled switch fails closed without using another conversation');
  hub.beforeShutdown('quit');replacement.beforeShutdown('quit');failing.beforeShutdown('quit');
+ await groupHistory.stop();
  console.log('All isolation regression checks passed; no live QQ or model requests.');
 }finally{if(previousHome===undefined)delete process.env.HOME;else process.env.HOME=previousHome;fs.rmSync(home,{recursive:true,force:true});}

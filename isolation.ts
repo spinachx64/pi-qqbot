@@ -64,7 +64,7 @@ export class IsolationHub {
     // built-in provider selected from an empty session's default catalog.
     if (!this.defaultModel && state.registryCtx?.model) this.defaultModel = state.registryCtx.model;
     this.transport = Object.fromEntries([
-      "cfg", "api", "account", "gateway", "getToken", "restBase", "releaseLock", "candidates",
+      "cfg", "api", "account", "gateway", "groupHistory", "getToken", "restBase", "releaseLock", "candidates",
     ].map(key => [key, (state as any)[key]]));
     const scope = createHash("sha256").update(`${this.cwd}\0${state.account?.appId ?? ""}`).digest("hex").slice(0, 24);
     const indexFile = path.join(os.homedir(), ".pi", "agent", "qq-isolation", scope, "sessions.json");

@@ -52,6 +52,8 @@ export interface QQBotConfig {
   appSecret: string;
   sandbox: boolean;
   allowlist: string[];
+  /** Verified group_openid -> this bot's member_openid; never infer from nicknames. */
+  groupSelfOpenids: Record<string, string>;
   markdownReply: boolean;
   streaming: boolean;
   toolProgress: boolean;
@@ -93,6 +95,7 @@ export interface QQBotsEntry {
   appSecret: string;
   sandbox?: boolean;
   allowlist?: string[];
+  groupSelfOpenids?: Record<string, string>;
   markdownReply?: boolean;
   streaming?: boolean;
   toolProgress?: boolean;
@@ -153,6 +156,9 @@ export function resolveConfig(
     appSecret,
     sandbox: entry.sandbox ?? file.sandbox ?? false,
     allowlist: entry.allowlist ?? file.allowlist ?? [],
+    groupSelfOpenids: Object.fromEntries(Object.entries({
+      ...asObject(file.groupSelfOpenids), ...asObject(entry.groupSelfOpenids),
+    }).filter(([group, id]) => group.length > 0 && typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id))),
     markdownReply: entry.markdownReply ?? file.markdownReply ?? false,
     streaming: entry.streaming ?? file.streaming ?? false,
     toolProgress: entry.toolProgress ?? file.toolProgress ?? false,

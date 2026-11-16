@@ -1,6 +1,7 @@
 {
   "sandbox": true,
   "allowlist": [],
+  "groupSelfOpenids": {},
   "markdownReply": true,
   "streaming": false,
   "approve": {

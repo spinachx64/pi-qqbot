@@ -57,6 +57,11 @@ export interface QQAttachment {
 
 /** ParsedQuote also carries quotedAttachments, separate from current attachments. */
 export interface QQMessage extends ParsedQuote {
+  /** Original full-event text, retained for archival before removing our @ tag. */
+  rawContent?: string;
+  eventType?: string;
+  isAtBot?: boolean;
+  senderIsBot?: boolean;
   /** Conversation target: a user openid, or group:<group_openid>. */
   openid: string;
   senderOpenid?: string;
@@ -89,6 +94,9 @@ export interface QQMessage extends ParsedQuote {
   connected: () => void;
   disconnected: () => void;
   message: (msg: QQMessage) => Promise<void> | void;
+  /** Observe group traffic without passing passive messages to Pi. */
+  groupMessage?: (msg: QQMessage) => Promise<void> | void;
+  groupSelfOpenids?: Record<string, string>;
   interaction: (event: QQInteractionEvent) => void | Promise<void>;
   reconnectBaseMs?: number;
   maxSeen?: number;
@@ -105,6 +113,7 @@ export class QQGateway {
   private stopped = false;
   private seenIds = new Set<string>();
   private seenOrder: string[] = [];
+  private selfId: string | undefined;
 
   constructor(private opts: QQGatewayOptions) {}
 
@@ -211,18 +220,56 @@ export class QQGateway {
         this.lastSeq = pkt.s ?? this.lastSeq;
         const d = pkt.d ?? {};
         const t = pkt.t ?? "";
+        if (t === "GROUP_AT_MESSAGE_CREATE" || t === "GROUP_MESSAGE_CREATE") {
+          this.handleGroupPacket(t, d, pkt.id);
+          break;
+        }
         // interaction 有 5 秒 ACK 要求：平台重投时也必须再回应，不能按消息去重
         const duplicate = t !== "INTERACTION_CREATE" && this.isDuplicate(pkt.id ?? String(d.msg_id ?? d.id ?? ""));
-        // Observe both event types before the existing dedup/dispatch boundary.
-        // GROUP_MESSAGE_CREATE remains diagnostic-only and cannot start a run.
-        if (t === "GROUP_AT_MESSAGE_CREATE" || t === "GROUP_MESSAGE_CREATE") {
-          logGroupIdentity(t, pkt.id, d, duplicate);
-        }
         if (duplicate) return;
         this.handleDispatch(t, d);
         break;
       }
     }
+  }
+
+  private handleGroupPacket(t: string, d: any, eventId: unknown): void {
+    const group = typeof d.group_openid === "string" ? d.group_openid : "";
+    const messageId = String(d.id ?? d.msg_id ?? "");
+    const id = messageId || (typeof eventId === "string" ? eventId : "");
+    const duplicate = id ? this.isDuplicate(`observed:${group}:${id}`) : false;
+    logGroupIdentity(t, eventId, d, duplicate);
+    const ownIds = new Set([this.selfId, this.opts.groupSelfOpenids?.[group]].filter((id): id is string => !!id));
+    const rawContent = typeof d.content === "string" ? d.content : "";
+    const hasOwnMention = Array.isArray(d.mentions)
+      ? d.mentions.some((m: any) => [m?.member_openid, m?.openid, m?.id, m?.user?.id].some(id => ownIds.has(id)))
+      : [...rawContent.matchAll(/<@!?([A-Za-z0-9_-]+)>|<qqbot-at-user\s+id=["']([A-Za-z0-9_-]+)["']\s*\/?\s*>/g)]
+        .some(match => ownIds.has(match[1] ?? match[2]));
+    const senderId = d.author?.member_openid;
+    const senderIsBot = d.author?.bot === true || ownIds.has(senderId);
+    const isAtBot = t === "GROUP_AT_MESSAGE_CREATE" || hasOwnMention;
+    // Remove only our verified @ markers so /queue, approvals, etc. retain the
+    // same body semantics as GROUP_AT pushes. Other members' mentions survive.
+    const content = rawContent.replace(/<@!?([A-Za-z0-9_-]+)>|<qqbot-at-user\s+id=["']([A-Za-z0-9_-]+)["']\s*\/?\s*>/g,
+      (marker, id, xmlId) => ownIds.has(id ?? xmlId) ? "" : marker);
+    const msg = this.parseMessage(t, { ...d, content });
+    if (!msg) return;
+    Object.assign(msg, { rawContent, eventType: t, isAtBot, senderIsBot });
+    const trigger = !senderIsBot && isAtBot && (!id || !this.isDuplicate(`triggered:${group}:${id}`));
+    const deliver = () => {
+      if (!trigger) return;
+      try {
+        Promise.resolve(this.opts.message(msg)).catch(() => log("[gateway] 群消息派发失败"));
+      } catch { log("[gateway] 群消息派发失败"); }
+    };
+    if (!duplicate && this.opts.groupMessage) {
+      // Archive first so a newly started run can query the current message too.
+      try {
+        Promise.resolve(this.opts.groupMessage(msg)).then(deliver, () => {
+          log("[group-history] 归档失败；继续处理当前 @ 消息"); deliver();
+        });
+      } catch { log("[group-history] 归档失败；继续处理当前 @ 消息"); deliver(); }
+    } else deliver();
   }
 
   private async sendIdentify() {
@@ -258,6 +305,7 @@ export class QQGateway {
       this.sessionId = String(d.session_id);
       this.resumeAttempted = false;
       this.reconnectAttempt = 0;
+      this.selfId = typeof d.user?.id === "string" ? d.user.id : undefined;
       log("[gateway] ✅ READY，bot 已上线 session=", this.sessionId);
       log("[gateway] SELF_IDENTITY", { source: "READY.user", user: identityFields(d.user) });
       this.opts.connected();
@@ -274,68 +322,73 @@ export class QQGateway {
       this.opts.interaction(d as QQInteractionEvent);
       return;
     }
-    if (t === "C2C_MESSAGE_CREATE" || t === "GROUP_AT_MESSAGE_CREATE") {
-      const group = t === "GROUP_AT_MESSAGE_CREATE";
-      const groupOpenid = group ? String(d.group_openid ?? "") : undefined;
-      const senderOpenid = String(group
-        ? d.author?.member_openid ?? ""
-        : d.author?.user_openid ?? d.author?.id ?? d.openid ?? "");
-      if (!senderOpenid || (group && !groupOpenid)) {
-        log("[gateway] 忽略缺少目标/发送者的消息:", t);
-        return;
-      }
-      const target = group ? groupTarget(groupOpenid!) : senderOpenid;
-      const content = String(d.content ?? "");
-      const senderName = group
-        ? (typeof d.author?.username === "string" && d.author.username.trim()) || `成员_${senderOpenid.slice(-8)}`
-        : undefined;
-      const memberRole = group && typeof d.author?.member_role === "string"
-        ? d.author.member_role : undefined;
-      const rawAttachments = Array.isArray(d.attachments) ? d.attachments : [];
-      const attachments = rawAttachments
-        .filter((a: any) => !!a && typeof a === "object")
-        // 语音消息常常只给 voice_wav_url；其余附件用 url
-        .map((a: any) => ({
-          url: String(a.url ?? a.voice_wav_url ?? "").trim(),
-          contentType: String(a.content_type ?? a.contentType ?? "").trim(),
-          filename: a.filename ? String(a.filename) : undefined,
-          size: Number.isFinite(Number(a.size)) ? Number(a.size) : undefined,
-        }))
-        .filter((a: any) => a.url);
-      // 下载地址带 rkey（临时凭据），日志只留类别与来源主机
-      log(
-        group ? "[gateway] GROUP_AT 消息 target=" : "[gateway] C2C 消息 openid=",
-        target,
-        "sender=", senderOpenid,
-        "content=",
-        content.slice(0, 80),
-        "attachments=",
-        attachments.length,
-        attachments.length > 0
-          ? attachments
-              .map((a: any) => {
-                try {
-                  return new URL(a.url).host;
-                } catch {
-                  return "?";
-                }
-              })
-              .join(",")
-          : "",
-      );
-      this.opts.message({
-        openid: target,
-        senderOpenid,
-        senderName,
-        memberRole,
-        groupOpenid,
-        content,
-        msgId: String(d.id ?? d.msg_id ?? ""),
-        timestamp: Date.parse(String(d.timestamp ?? "")) || Date.now(),
-        attachments,
-        ...(group ? parseQuote(d) : {}),
-      });
+    if (t === "C2C_MESSAGE_CREATE") {
+      const msg = this.parseMessage(t, d);
+      if (msg) this.opts.message(msg);
     }
+  }
+
+  private parseMessage(t: string, d: any): QQMessage | undefined {
+    const group = t === "GROUP_AT_MESSAGE_CREATE" || t === "GROUP_MESSAGE_CREATE";
+    const groupOpenid = group ? String(d.group_openid ?? "") : undefined;
+    const senderOpenid = String(group
+      ? d.author?.member_openid ?? ""
+      : d.author?.user_openid ?? d.author?.id ?? d.openid ?? "");
+    if (!senderOpenid || (group && !groupOpenid)) {
+      log("[gateway] 忽略缺少目标/发送者的消息:", t);
+      return;
+    }
+    const target = group ? groupTarget(groupOpenid!) : senderOpenid;
+    const content = String(d.content ?? "");
+    const senderName = group
+      ? (typeof d.author?.username === "string" && d.author.username.trim()) || `成员_${senderOpenid.slice(-8)}`
+      : undefined;
+    const memberRole = group && typeof d.author?.member_role === "string"
+      ? d.author.member_role : undefined;
+    const rawAttachments = Array.isArray(d.attachments) ? d.attachments : [];
+    const attachments = rawAttachments
+      .filter((a: any) => !!a && typeof a === "object")
+      // 语音消息常常只给 voice_wav_url；其余附件用 url
+      .map((a: any) => ({
+        url: String(a.url ?? a.voice_wav_url ?? "").trim(),
+        contentType: String(a.content_type ?? a.contentType ?? "").trim(),
+        filename: a.filename ? String(a.filename) : undefined,
+        size: Number.isFinite(Number(a.size)) ? Number(a.size) : undefined,
+      }))
+      .filter((a: any) => a.url);
+    // 下载地址带 rkey（临时凭据），日志只留类别与来源主机
+    if (!group || t === "GROUP_AT_MESSAGE_CREATE") log(
+      group ? "[gateway] GROUP_AT 消息 target=" : "[gateway] C2C 消息 openid=",
+      target,
+      "sender=", senderOpenid,
+      "content=",
+      content.slice(0, 80),
+      "attachments=",
+      attachments.length,
+      attachments.length > 0
+        ? attachments
+            .map((a: any) => {
+              try {
+                return new URL(a.url).host;
+              } catch {
+                return "?";
+              }
+            })
+            .join(",")
+        : "",
+    );
+    return {
+      openid: target,
+      senderOpenid,
+      senderName,
+      memberRole,
+      groupOpenid,
+      content,
+      msgId: String(d.id ?? d.msg_id ?? ""),
+      timestamp: Date.parse(String(d.timestamp ?? "")) || Date.now(),
+      attachments,
+      ...(group ? parseQuote(d) : {}),
+    };
   }
 }
 

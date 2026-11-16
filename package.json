@@ -27,8 +27,9 @@
     ]
   },
   "scripts": {
-    "test": "npm run test:group && npm run test:isolation && npm run test:update-policy",
+    "test": "npm run test:group && npm run test:history && npm run test:isolation && npm run test:update-policy",
     "test:group": "node test/group.test.mjs",
+    "test:history": "node test/group-history.test.mjs",
     "test:isolation": "node test/isolation.test.mjs",
     "test:update-policy": "node test/update-policy.test.mjs"
   },
