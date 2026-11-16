@@ -7,6 +7,7 @@ import { createJiti } from 'jiti';
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-qqbot-group-test-'));
 const oldHome = process.env.HOME;
 process.env.HOME = temporary;
+fs.mkdirSync(path.join(temporary, '.pi/agent'), { recursive: true });
 const jiti = createJiti(import.meta.url, { alias: {
   '@earendil-works/pi-coding-agent': fileURLToPath(new URL('./pi-api-stub.mjs', import.meta.url)),
 }});
@@ -55,6 +56,54 @@ try {
   assert.equal(received[1].senderName, undefined);
   assert.equal(received[1].quoteStatus, undefined);
   console.log('PASS gateway: group/private parsing, attachments, duplicate/malformed events');
+
+  const diagnosticMessages = [];
+  const diagnosticGateway = new QQGateway({ getGatewayUrl: async () => '', getToken: async () => '', intents: 0,
+    connected() {}, disconnected() {}, interaction() {}, message: msg => diagnosticMessages.push(msg) });
+  diagnosticGateway.handlePacket({ op: 0, t: 'READY', d: { session_id: 'diagnostic-session',
+    user: { id: 'bot-native-id', username: '小菜鸡', bot: true, avatar: 'https://private.test/avatar?rkey=AVATAR_SECRET', access_token: 'IDENTITY_SECRET' } } });
+  const diagnosticFrame = { op: 0, t: 'GROUP_AT_MESSAGE_CREATE', id: 'diagnostic-event', d: {
+    id: 'diagnostic-message', group_openid: 'diagnostic-group',
+    author: { member_openid: 'sender-openid', username: '发言者', access_token: 'AUTHOR_SECRET' },
+    content: 'diagnostic-body <@group-bot-openid> <qqbot-at-user id="other-openid" /> <@!third-openid>',
+    mentions: [{ openid: 'group-bot-openid', username: '小菜鸡', avatar: 'https://private.test/avatar?rkey=MENTION_SECRET' },
+      { id: 'other-openid', username: '另一个成员', bot: false }, { user: { id: 'nested-id', username: '嵌套成员', token: 'NESTED_SECRET' } }],
+    message_scene: { ext: ['auth_token=SCENE_SECRET'] },
+  } };
+  diagnosticGateway.handlePacket(diagnosticFrame);
+  diagnosticGateway.handlePacket(diagnosticFrame);
+  diagnosticGateway.handlePacket({ op: 0, t: 'GROUP_MESSAGE_CREATE', id: 'diagnostic-full-event', d: {
+    ...diagnosticFrame.d, content: 'https://private.test/download?rkey=CONTENT_SECRET',
+    attachments: [{ url: 'https://private.test/download?rkey=ATTACHMENT_SECRET' }],
+  } });
+  diagnosticGateway.handlePacket({ op: 0, t: 'GROUP_MESSAGE_CREATE', id: 'diagnostic-no-mentions', d: {
+    id: 'diagnostic-no-mentions', mentions: [null, 5, 'unexpected'], content: null,
+  } });
+  assert.equal(diagnosticMessages.length, 1, 'diagnostics preserve dedup and do not dispatch full group events');
+  const diagnosticLog = fs.readFileSync(path.join(temporary, '.pi/agent/pi-qqbot.log'), 'utf8');
+  const diagnosticRows = marker => diagnosticLog.split('\n').filter(line => line.includes(`[gateway] ${marker} `))
+    .map(line => JSON.parse(line.split(`[gateway] ${marker} `)[1]));
+  const selfIdentity = diagnosticRows('SELF_IDENTITY').at(-1);
+  assert.deepEqual(selfIdentity, { source: 'READY.user', user: { id: 'bot-native-id', username: '小菜鸡', bot: true } });
+  const groupIdentity = diagnosticRows('GROUP_IDENTITY').filter(row => row.eventId?.startsWith('diagnostic-'));
+  assert.equal(groupIdentity.length, 4, 'duplicate and unhandled full-group events are still observable');
+  assert.equal(groupIdentity[0].eventId, 'diagnostic-event');
+  assert.equal(groupIdentity[0].messageId, 'diagnostic-message');
+  assert.equal(groupIdentity[0].groupOpenid, 'diagnostic-group');
+  assert.deepEqual(groupIdentity[0].author, { member_openid: 'sender-openid', username: '发言者' });
+  assert.deepEqual(groupIdentity[0].atIds, ['group-bot-openid', 'other-openid', 'third-openid']);
+  assert.deepEqual(groupIdentity[0].mentions[0], { openid: 'group-bot-openid', username: '小菜鸡' });
+  assert.deepEqual(groupIdentity[0].mentions[2], { user: { id: 'nested-id', username: '嵌套成员' } });
+  assert.equal(groupIdentity[0].duplicate, false);
+  assert.equal(groupIdentity[1].duplicate, true);
+  assert.equal(groupIdentity[2].eventType, 'GROUP_MESSAGE_CREATE');
+  assert.deepEqual(groupIdentity[2].atIds, []);
+  assert.deepEqual(groupIdentity[3].mentions, [{}, {}, {}]);
+  const diagnosticOutput = JSON.stringify([selfIdentity, groupIdentity]);
+  for (const omitted of ['SECRET', 'rkey', 'diagnostic-body', 'auth_token', 'access_token', 'session_id']) {
+    assert(!diagnosticOutput.includes(omitted), `identity diagnostics exclude ${omitted}`);
+  }
+  console.log('PASS identity diagnostics: READY user, mention shapes and markers, event/message IDs, pre-dedup observation and no raw payload/URL disclosure');
 
   const msg = (target, id, content = 'hello') => ({ openid: target, senderOpenid: 'member-1', msgId: id, content, attachments: [] });
   await handleMessage(pi, state, api, cfg, msg('group:group-a', 'message-a'));

@@ -103,6 +103,8 @@ export PI_QQBOT_APPSECRET="YOUR_APP_SECRET"
 
 对话日志按北京时间分日，记录时间使用 UTC ISO 8601。每条 JSON 包含 `timestamp`、`direction`、`target`、`content` 等字段；附件只记录文件名、类型和大小等元数据，不存临时下载 URL 或文件内容。日志文本会经过现有脱敏器，但仍应按私人对话数据管理。
 
+诊断日志的 `SELF_IDENTITY` 记录 READY 提供的机器人身份；`GROUP_IDENTITY` 记录群消息事件类型、事件/消息 ID、发送者、`mentions` 身份字段和正文中的 @ 标记 ID，并标明是否被现有去重逻辑拦截。该诊断覆盖 `GROUP_AT_MESSAGE_CREATE` 和 `GROUP_MESSAGE_CREATE`，后者仍不会交给模型。新增诊断只提取指定字段，不记录完整事件、附件地址或正文，也不会凭昵称认定哪个群内 OpenID 属于机器人。
+
 ## 开发与更新
 
 ```bash

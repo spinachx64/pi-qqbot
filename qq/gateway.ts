@@ -11,6 +11,41 @@ const OP_RESUME = 6;
 const OP_HELLO = 10;
 const OP_HEARTBEAT_ACK = 11;
 
+/** Identity diagnostics are deliberately projected: no raw payloads or URLs. */
+function identityFields(value: unknown): Record<string, string | boolean> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const raw = value as Record<string, unknown>;
+  const result: Record<string, string | boolean> = {};
+  for (const key of ["id", "openid", "member_openid", "user_openid", "username"]) {
+    if (typeof raw[key] === "string") result[key] = raw[key].slice(0, 256);
+  }
+  if (typeof raw.bot === "boolean") result.bot = raw.bot;
+  return result;
+}
+
+function logGroupIdentity(eventType: string, eventId: unknown, d: any, duplicate: boolean): void {
+  const field = (value: unknown) => typeof value === "string" ? value.slice(0, 512) : undefined;
+  const mentions = Array.isArray(d.mentions) ? d.mentions : [];
+  const content = typeof d.content === "string" ? d.content : "";
+  const atIds = new Set<string>();
+  // Extract only ID-shaped tokens, never the surrounding text or signed URLs.
+  const markers = /<@!?([A-Za-z0-9_-]{1,128})>|<qqbot-at-user\s+id=["']([A-Za-z0-9_-]{1,128})["']\s*\/?\s*>/g;
+  for (const match of content.matchAll(markers)) {
+    atIds.add(match[1] ?? match[2]);
+    if (atIds.size >= 100) break;
+  }
+  log("[gateway] GROUP_IDENTITY", {
+    eventType, eventId: field(eventId), messageId: field(d.id), msgId: field(d.msg_id),
+    groupOpenid: field(d.group_openid), author: identityFields(d.author),
+    mentionsPresent: Array.isArray(d.mentions), mentionCount: mentions.length,
+    mentions: mentions.slice(0, 100).map((mention: any) => ({
+      ...identityFields(mention),
+      ...(mention?.user && typeof mention.user === "object" ? { user: identityFields(mention.user) } : {}),
+    })),
+    atIds: [...atIds], duplicate,
+  });
+}
+
 export interface QQAttachment {
   /** 签名下载地址（带 rkey，有效期很短，收到就要下） */
   url: string;
@@ -177,7 +212,13 @@ export class QQGateway {
         const d = pkt.d ?? {};
         const t = pkt.t ?? "";
         // interaction 有 5 秒 ACK 要求：平台重投时也必须再回应，不能按消息去重
-        if (t !== "INTERACTION_CREATE" && this.isDuplicate(pkt.id ?? String(d.msg_id ?? d.id ?? ""))) return;
+        const duplicate = t !== "INTERACTION_CREATE" && this.isDuplicate(pkt.id ?? String(d.msg_id ?? d.id ?? ""));
+        // Observe both event types before the existing dedup/dispatch boundary.
+        // GROUP_MESSAGE_CREATE remains diagnostic-only and cannot start a run.
+        if (t === "GROUP_AT_MESSAGE_CREATE" || t === "GROUP_MESSAGE_CREATE") {
+          logGroupIdentity(t, pkt.id, d, duplicate);
+        }
+        if (duplicate) return;
         this.handleDispatch(t, d);
         break;
       }
@@ -218,6 +259,7 @@ export class QQGateway {
       this.resumeAttempted = false;
       this.reconnectAttempt = 0;
       log("[gateway] ✅ READY，bot 已上线 session=", this.sessionId);
+      log("[gateway] SELF_IDENTITY", { source: "READY.user", user: identityFields(d.user) });
       this.opts.connected();
       return;
     }
