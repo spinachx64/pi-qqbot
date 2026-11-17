@@ -282,6 +282,7 @@ export default function (
           "群聊回复紧扣当前问题：历史记录只用于补足背景，优先参考明确引用和当前发言者的相关上下文，避免把不同话题拼进同一条回复。",
           "群聊中若结合相关上下文仍无法确定指代或话题，只用一句简短的问题确认，不展开多个猜测。",
           "群聊回复自然简洁，直接给出结果；默认省略“查到群聊记录了”“所以你可能是……”等检索、话题判断和查证过程说明。保留必要的来源、影响结论的限制和不确定性；用户明确要求过程或详细解释时再展开。",
+          "群聊中仅要求下载并发送视频或其他文件时，直接调用工具交付；全部发送成功后静默结束，不追加“已发送”、文件信息或其他说明，也不预先叙述下载发送流程。下载或发送失败时才简短说明失败原因；若用户还明确要求总结、解释或其他文字内容，则照常提供所需内容。",
         ];
         for (const replyRule of replyRules) {
           if (!options.promptGuidelines.includes(replyRule)) options.promptGuidelines.push(replyRule);
@@ -866,7 +867,8 @@ export default function (
         "把本机上已有的文件发送到当前 QQ 对话（对方收到可下载的文件卡片/图片/视频/语音）。" +
         "只在用户明确要求把某个文件发给他时使用；path 必须是本机绝对路径。" +
         "是否需要先在 QQ 里审批由配置决定（files.forceApproval=true 时每次单独确认；" +
-        "否则按普通审批规则，可能在配置了 approve.tools 时询问），同意后才会真正上传。",
+        "否则按普通审批规则，可能在配置了 approve.tools 时询问），同意后才会真正上传。" +
+        "群聊中仅要求发送文件的任务，全部成功交付后静默结束，不追加确认或说明；失败时才告知原因。用户另有文字问题时照常回答。",
       parameters: Type.Object({
         path: Type.String({ description: "本机文件的绝对路径，例如 D:\\docs\\report.pdf" }),
         name: Type.Optional(
@@ -874,8 +876,12 @@ export default function (
         ),
       }),
       async execute(_toolCallId: string, params: any) {
+        const groupDelivery = isGroupTarget(state.currentOpenid ?? "");
         const text = await sendFileToQQ(state, String(params?.path ?? ""), params?.name ? String(params.name) : undefined);
-        return { content: [{ type: "text", text }], details: { tool: QQ_SEND_FILE_TOOL } };
+        const guidance = groupDelivery
+          ? "\n文件已实际送达群聊。若当前请求仅为下载/发送文件，全部文件交付成功后请直接结束，不再输出文字确认或说明；仍有未完成文件则继续处理，失败才告知原因。若用户另有明确文字问题，则回答该问题。"
+          : "";
+        return { content: [{ type: "text", text: text + guidance }], details: { tool: QQ_SEND_FILE_TOOL } };
       },
     }),
   );
