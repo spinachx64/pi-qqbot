@@ -55,7 +55,7 @@ try{
  const beforeRollRuntimes=runtimes.length;
  for(const target of ['group:A','group:B']){
   await hub.receive(msg(target,'roll-'+target,'/roll',{senderName:'阿强'}));
-  assert.match(sends.at(-1).body.content,/^阿强掷出了([1-9]|[1-9]\d|100)\(1-100\)\.$/);
+  assert.match(sends.at(-1).body.content,/^阿强掷出了([1-9]|[1-9]\d|100)\(1-100\)$/);
   assert.equal(sends.at(-1).url,'https://qq.test/v2/groups/'+target.slice(6)+'/messages');
   assert.equal(sends.at(-1).body.msg_id,'roll-'+target);
   assert.equal(hub.stateFor(target).queue.size,0,'roll bypasses isolation queues in active and inactive groups');

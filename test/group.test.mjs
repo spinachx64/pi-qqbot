@@ -147,9 +147,9 @@ try {
   });
   assert.equal(calls.at(-1).url, 'https://qq.test/v2/groups/roll-group/messages');
   assert.equal(calls.at(-1).body.msg_id, 'roll-msg');
-  assert.match(calls.at(-1).body.content, /^阿强掷出了([1-9]|[1-9]\d|100)\(1-100\)\.$/);
+  assert.match(calls.at(-1).body.content, /^阿强掷出了([1-9]|[1-9]\d|100)\(1-100\)$/);
   await handleMessage(noModel, rollState, api, rollCfg, msg('group:roll-group', 'roll-fallback', '/roll'));
-  assert.match(calls.at(-1).body.content, /^成员_member-1掷出了([1-9]|[1-9]\d|100)\(1-100\)\.$/);
+  assert.match(calls.at(-1).body.content, /^成员_member-1掷出了([1-9]|[1-9]\d|100)\(1-100\)$/);
   const beforeBlockedRoll = calls.length;
   await handleMessage(noModel, rollState, api, { ...rollCfg, allowlist: ['other'] }, msg('group:roll-group', 'roll-denied', '/roll'));
   assert.equal(calls.length, beforeBlockedRoll, 'allowlist still gates roll');

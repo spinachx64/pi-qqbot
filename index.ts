@@ -1382,7 +1382,7 @@ export async function handleMessage(
       } else {
         const name = msg.senderName?.replace(/[\r\n\t]/g, " ").trim()
           || `成员_${(msg.senderOpenid ?? msg.openid).slice(-8)}`;
-        await replyTo(api, state, msg.openid, `${name}掷出了${randomInt(1, 101)}(1-100).`);
+        await replyTo(api, state, msg.openid, `${name}掷出了${randomInt(1, 101)}(1-100)`);
       }
       return;
     }
