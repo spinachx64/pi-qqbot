@@ -136,6 +136,31 @@ try {
   await events.get('agent_settled')();
   console.log('PASS group allowlist validates member identity, not group target');
 
+  const rollState = createInitialState();
+  rollState.busy = true;
+  rollState.queue.push('group:roll-group', 'existing task');
+  const noModel = { ...pi, getCommands: () => [{ name: 'roll', source: 'extension' }],
+    sendUserMessage: () => assert.fail('/roll must not call Pi, even with slash passthrough') };
+  const rollCfg = { ...cfg, commands: { passthrough: true } };
+  await handleMessage(noModel, rollState, api, rollCfg, {
+    ...msg('group:roll-group', 'roll-msg', '  /ROLL  '), senderName: '阿强',
+  });
+  assert.equal(calls.at(-1).url, 'https://qq.test/v2/groups/roll-group/messages');
+  assert.equal(calls.at(-1).body.msg_id, 'roll-msg');
+  assert.match(calls.at(-1).body.content, /^阿强掷出了([1-9]|[1-9]\d|100)\(1-100\)\.$/);
+  await handleMessage(noModel, rollState, api, rollCfg, msg('group:roll-group', 'roll-fallback', '/roll'));
+  assert.match(calls.at(-1).body.content, /^成员_member-1掷出了([1-9]|[1-9]\d|100)\(1-100\)\.$/);
+  const beforeBlockedRoll = calls.length;
+  await handleMessage(noModel, rollState, api, { ...rollCfg, allowlist: ['other'] }, msg('group:roll-group', 'roll-denied', '/roll'));
+  assert.equal(calls.length, beforeBlockedRoll, 'allowlist still gates roll');
+  await handleMessage(noModel, rollState, api, rollCfg, msg('group:roll-group', 'roll-args', '/roll 200'));
+  assert.match(calls.at(-1).body.content, /用法/);
+  await handleMessage(noModel, rollState, api, rollCfg, msg('private-roll', 'roll-private', '/roll'));
+  assert.match(calls.at(-1).body.content, /请在群聊/);
+  assert.equal(rollState.busy, true);
+  assert.equal(rollState.queue.size, 1, 'roll never changes a running task or existing queue');
+  console.log('PASS group roll: format/range, nickname fallback, permissions, invalid args, busy queue and passthrough precedence');
+
   api.rememberMessage('group:media-group', 'media-msg');
   await api.sendC2CMedia('group:media-group', 'fake-media-info');
   assert.equal(calls.at(-1).url, 'https://qq.test/v2/groups/media-group/messages');

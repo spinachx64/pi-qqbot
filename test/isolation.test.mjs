@@ -52,6 +52,16 @@ try{
  assert.equal(runs[0].target,'group:A');assert.deepEqual(runs[0].history,[]);
  assert.notEqual(runs[0].file,initial.file,'mixed history must not be adopted');
  const aState=hub.stateFor('group:A');aState.approver.setAutoAllow(true);
+ const beforeRollRuntimes=runtimes.length;
+ for(const target of ['group:A','group:B']){
+  await hub.receive(msg(target,'roll-'+target,'/roll',{senderName:'阿强'}));
+  assert.match(sends.at(-1).body.content,/^阿强掷出了([1-9]|[1-9]\d|100)\(1-100\)\.$/);
+  assert.equal(sends.at(-1).url,'https://qq.test/v2/groups/'+target.slice(6)+'/messages');
+  assert.equal(sends.at(-1).body.msg_id,'roll-'+target);
+  assert.equal(hub.stateFor(target).queue.size,0,'roll bypasses isolation queues in active and inactive groups');
+ }
+ assert.equal(runs.length,1);assert.equal(runtimes.length,beforeRollRuntimes,'roll never switches sessions');
+ assert.equal(hub.activeTarget,'group:A');assert.equal(aState.busy,true);assert.equal(aState.approver.autoAllowed,true);
  await hub.receive(msg('group:B','b1','secret-B',{senderName:'同昵称',senderOpenid:'member-B-one',...quote('将被取消的群 B 引用')}));
  await hub.receive(msg('private-C','c1','secret-C'));
  await hub.receive(msg('group:A','a2','remember A',{senderName:'同昵称',senderOpenid:'member-A-two',...imageQuote('群 A 的第二条引用','A')}));

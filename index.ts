@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { randomInt } from "node:crypto";
 import { loadAccounts, pinnedAccountName, type QQBotAccount, type QQBotConfig } from "./config";
 import {
   REST_BASE_PROD,
@@ -239,6 +240,7 @@ export default function (
     control: (channel, msg) => {
       const command = parseCommand(msg.content);
       if (isCancelIntent(msg.content)) { hub.cancelReserved(msg.openid); return true; }
+      if (command?.name === "roll" && !msg.attachments?.length) return true;
       if (command && ["queue", "status", "progress", "reset"].includes(command.name)) return true;
       return hub.activeTarget === msg.openid && !hub.switching && channel.approver.pendingCount > 0 && !!channel.approver.parseReply(msg.content);
     },
@@ -1369,6 +1371,22 @@ export async function handleMessage(
       attachments: (msg.attachments ?? []).map((a) => ({ filename: a.filename, contentType: a.contentType, size: a.size })),
     });
 
+    // Local game command: no model/session switch, picker action or task queue.
+    // Handle before slash passthrough so a Pi command named roll cannot take over.
+    const roll = msg.attachments?.length ? null : parseCommand(msg.content);
+    if (roll?.name === "roll") {
+      if (!msg.openid.startsWith("group:")) {
+        await replyTo(api, state, msg.openid, "请在群聊中 @机器人发送 /roll。");
+      } else if (roll.args) {
+        await replyTo(api, state, msg.openid, "用法：@机器人 /roll，固定随机范围为 1-100。");
+      } else {
+        const name = msg.senderName?.replace(/[\r\n\t]/g, " ").trim()
+          || `成员_${(msg.senderOpenid ?? msg.openid).slice(-8)}`;
+        await replyTo(api, state, msg.openid, `${name}掷出了${randomInt(1, 101)}(1-100).`);
+      }
+      return;
+    }
+
     if (state.isolation?.blockedCommand(msg.content)) {
       await replyTo(api, state, msg.openid, "会话隔离模式下不开放跨会话历史浏览/切换命令。发 /new 可新建本聊天的会话，其他聊天不受影响。");
       return;
@@ -1611,6 +1629,7 @@ export async function handleMessage(
         msg.openid,
         [
           "pi-qqbot 指令:",
+          "/roll — 群聊掷骰，随机 1-100 点（需 @机器人）",
           "/progress — 查看进度；/progress off 暂停自动汇报、/progress on 恢复（本会话有效）",
           "/status — 查看状态（当前 qqbot / 忙闲 / 来源 / 队列 / 自动同意 / 待审批 / 自动汇报）",
           "/queue — 查看队列；/queue clear 清空；/queue drop <编号> 删一条",
@@ -2114,17 +2133,17 @@ const RE_RESUME_TALK = new RegExp("^" + REPORT_LEAD + "(?:接着说|说下去|�
 
 /** 不带斜杠的进度问询：「进度」「当前进度」「汇报一下当前进度」（可带子命令） */
 
-function parseCommand(text: string): { name: "reset" | "status" | "help" | "queue" | "progress"; args: string } | null {
+function parseCommand(text: string): { name: "reset" | "status" | "help" | "queue" | "progress" | "roll"; args: string } | null {
   // 注意：/new 现在属于 pi 的内置命令（由 slash 路由接管，真的开新会话），
   // 本地的「清缓冲/清审批记忆」改名为 /reset。
   // 斜杠形式：全部内置指令；不带斜杠时只接受明确表达「进度」的词，避免把聊天里的 "p" / "status" 误判成命令
   const t = text.trim();
-  const slash = /^\/(reset|status|help|queue|q|progress|p)(?:\s+([\s\S]*))?$/i.exec(t);
+  const slash = /^\/(reset|status|help|queue|q|progress|p|roll)(?:\s+([\s\S]*))?$/i.exec(t);
   if (slash) {
     const raw = slash[1].toLowerCase();
     const name = raw === "q" ? "queue" : raw === "p" ? "progress" : raw;
     return {
-      name: name as "reset" | "status" | "help" | "queue" | "progress",
+      name: name as "reset" | "status" | "help" | "queue" | "progress" | "roll",
       args: (slash[2] ?? "").trim(),
     };
   }
